@@ -36,7 +36,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define LCD_ADDR (0x27 << 1)
-#define ADC_ADDR (0x48 << 1)
+#define ADC_ADDR 0x91
 
 #define PIN_RS    (1 << 0)
 #define PIN_EN    (1 << 2)
@@ -52,28 +52,30 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
-I2C_HandleTypeDef hi2c2;
 
 RTC_HandleTypeDef hrtc;
 
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-char trans_str[17] = { 0, };
-int timerN = 10;
+
+int timerRTC = 0;
 int inc, ouc = 0;
+char flag = 0;
 char strTest[17] = { 0, };
 
-int ain1, ain2, ain3;
+int ain1, ain2, ainT;
 
-unsigned char RXc, t;
+RTC_TimeTypeDef sTime = { 0 };
+RTC_DateTypeDef DateToUpdate = { 0 };
+
+char trans_str[64] = { 0, };
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
-static void MX_I2C2_Init(void);
 static void MX_RTC_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
@@ -97,7 +99,67 @@ HAL_StatusTypeDef LCD_SendInternal(uint8_t lcd_addr, uint8_t data,
 	data_arr[3] = lo | flags | BACKLIGHT;
 
 	res = HAL_I2C_Master_Transmit(&hi2c1, lcd_addr, data_arr, sizeof(data_arr),
-			HAL_MAX_DELAY);
+	HAL_MAX_DELAY);
+	HAL_Delay(LCD_DELAY_MS);
+	return res;
+}
+
+HAL_StatusTypeDef Read_From_PCF8591(uint8_t DevAddress, uint8_t data,
+		uint8_t *pData, uint8_t len) {
+	HAL_StatusTypeDef returnValue;
+	uint8_t data_arr[1];
+	/* We compute the MSB and LSB parts of the memory address */
+	data_arr[0] = data;
+	/* First we send the command byte where start reading data */
+	returnValue = HAL_I2C_Master_Transmit(&hi2c1, DevAddress, data_arr,
+			sizeof(data_arr), HAL_MAX_DELAY);
+	if (returnValue != HAL_OK)
+		return returnValue;
+	/* Next we can retrieve the data from ADC */
+	returnValue = HAL_I2C_Master_Receive(&hi2c1, DevAddress, pData, len,
+	HAL_MAX_DELAY);
+	return returnValue;
+}
+HAL_StatusTypeDef Write_To_PCF8591(I2C_HandleTypeDef *hi2c, uint16_t DevAddress,
+		uint16_t MemAddress, uint8_t *pData, uint16_t len) {
+	HAL_StatusTypeDef returnValue;
+	uint8_t *data;
+	/* First we allocate a temporary buffer to store the destination memory
+	 * address and the data to store */
+	data = (uint8_t*) malloc(sizeof(uint8_t) * (len + 2));
+	/* We compute the MSB and LSB parts of the memory address */
+	data[0] = (uint8_t) ((MemAddress & 0xFF00) >> 8);
+	data[1] = (uint8_t) (MemAddress & 0xFF);
+	/* And copy the content of the pData array in the temporary buffer */
+	memcpy(data + 2, pData, len);
+	/* We are now ready to transfer the buffer over the I2C bus */
+	returnValue = HAL_I2C_Master_Transmit(hi2c, DevAddress, data, len + 2,
+	HAL_MAX_DELAY);
+	if (returnValue != HAL_OK)
+		return returnValue;
+	free(data);
+	/* We wait until the EEPROM effectively stores data in memory */
+	while (HAL_I2C_Master_Transmit(hi2c, DevAddress, 0, 0, HAL_MAX_DELAY)
+			!= HAL_OK)
+		;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef PCF8591_SendInternal(uint8_t adc_addr, uint8_t data) {
+	HAL_StatusTypeDef res;
+	for (;;) {
+		res = HAL_I2C_IsDeviceReady(&hi2c1, adc_addr, 1,
+		HAL_MAX_DELAY);
+		if (res == HAL_OK)
+			break;
+	}
+
+	uint8_t data_arr[1];
+
+	data_arr[0] = data;
+
+	res = HAL_I2C_Master_Transmit(&hi2c1, adc_addr, data_arr, sizeof(data),
+	HAL_MAX_DELAY);
 	HAL_Delay(LCD_DELAY_MS);
 	return res;
 }
@@ -111,6 +173,20 @@ void LCD_SendCommand(uint8_t lcd_addr, uint8_t cmd) {
 
 void LCD_SendData(uint8_t lcd_addr, uint8_t data) {
 	LCD_SendInternal(lcd_addr, data, PIN_RS);
+}
+
+void PCF8591_SendCommand(uint8_t adc_addr, uint8_t cmd) {
+	PCF8591_SendInternal(adc_addr, cmd);
+}
+
+void PCF8591_Read(uint8_t adc_addr, uint8_t cmd) {
+	PCF8591_SendInternal(adc_addr, cmd);
+}
+
+int MAP_Read() {
+	int tmp = 256;
+	Read_From_PCF8591(ADC_ADDR, 0b00000010, (uint8_t*) &tmp, 1);
+	return tmp;
 }
 
 void LCD_Init(uint8_t lcd_addr) {
@@ -135,6 +211,22 @@ void LCD_SendString(uint8_t lcd_addr, char *str) {
 		LCD_SendData(lcd_addr, (uint8_t) (*str));
 		str++;
 	}
+}
+
+void HAL_RTCEx_RTCEventCallback(RTC_HandleTypeDef *hrtc) {
+	timerRTC++;
+	//Read_From_PCF8591(ADC_ADDR, 0b00000010, (uint8_t*) &ain1, 1);
+	//HAL_Delay(1);
+	//Read_From_PCF8591(ADC_ADDR, 0b00000011, (uint8_t*) &ain2, 1);
+	if (flag == 1) {
+		snprintf(trans_str, 63, "%d %d\n", timerRTC, (2294*ain2-16381)/4247);
+		HAL_UART_Transmit(&huart1, (uint8_t*) trans_str, strlen(trans_str),
+				1000);
+		flag = 0;
+	}
+
+	//snprintf(trans_str, 63, "%04d U1=%04dmV U2=%04dmV\r\n", timerRTC, (255 - ain1) * 5000 / 255, (255 - ain2) * 5000 / 255);
+
 }
 /* USER CODE END 0 */
 
@@ -166,14 +258,15 @@ int main(void) {
 	/* Initialize all configured peripherals */
 	MX_GPIO_Init();
 	MX_I2C1_Init();
-	MX_I2C2_Init();
 	MX_RTC_Init();
 	MX_USART1_UART_Init();
 	/* USER CODE BEGIN 2 */
-	LCD_Init(LCD_ADDR);
-	HAL_Delay(200);
-	LCD_SendCommand(LCD_ADDR, 0b11000000);
-	LCD_SendString(LCD_ADDR, "RS485 test...   ");
+	//LCD_Init(LCD_ADDR);
+	HAL_Delay(100);
+
+	//LCD_SendCommand(LCD_ADDR, 0b11000000);
+	//LCD_SendString(LCD_ADDR, "RS485 test...   ");
+	HAL_RTCEx_SetSecond_IT(&hrtc);
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -182,9 +275,25 @@ int main(void) {
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
-		HAL_UART_Transmit(&huart1, "Test UART\r\n\0", 11, 15);
+		//HAL_UART_Transmit(&huart1, "Test UART\r\n\0", 11, 15);
 		//USART_SendData(USART1, RXc);
-		HAL_Delay(1000);
+		//HAL_Delay(1000);
+		if (flag == 0) {
+			ainT = 0;
+			int i;
+			for (i = 0; i < 100; i++) {
+				Read_From_PCF8591(ADC_ADDR, 0b00000010, (uint8_t*) &ain1, 1);
+				if (ain1 < 256) {
+					ain2 = ain2 + ain1;
+					ainT++;
+				}
+				HAL_Delay(2);
+			}
+			ain2 = ain2 / ainT;
+			flag = 1;
+
+		}
+
 	}
 	/* USER CODE END 3 */
 }
@@ -264,38 +373,6 @@ static void MX_I2C1_Init(void) {
 }
 
 /**
- * @brief I2C2 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_I2C2_Init(void) {
-
-	/* USER CODE BEGIN I2C2_Init 0 */
-
-	/* USER CODE END I2C2_Init 0 */
-
-	/* USER CODE BEGIN I2C2_Init 1 */
-
-	/* USER CODE END I2C2_Init 1 */
-	hi2c2.Instance = I2C2;
-	hi2c2.Init.ClockSpeed = 100000;
-	hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
-	hi2c2.Init.OwnAddress1 = 0;
-	hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-	hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-	hi2c2.Init.OwnAddress2 = 0;
-	hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-	hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-	if (HAL_I2C_Init(&hi2c2) != HAL_OK) {
-		Error_Handler();
-	}
-	/* USER CODE BEGIN I2C2_Init 2 */
-
-	/* USER CODE END I2C2_Init 2 */
-
-}
-
-/**
  * @brief RTC Initialization Function
  * @param None
  * @retval None
@@ -306,6 +383,9 @@ static void MX_RTC_Init(void) {
 
 	/* USER CODE END RTC_Init 0 */
 
+	RTC_TimeTypeDef sTime = { 0 };
+	RTC_DateTypeDef DateToUpdate = { 0 };
+
 	/* USER CODE BEGIN RTC_Init 1 */
 
 	/* USER CODE END RTC_Init 1 */
@@ -315,6 +395,28 @@ static void MX_RTC_Init(void) {
 	hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
 	hrtc.Init.OutPut = RTC_OUTPUTSOURCE_ALARM;
 	if (HAL_RTC_Init(&hrtc) != HAL_OK) {
+		Error_Handler();
+	}
+
+	/* USER CODE BEGIN Check_RTC_BKUP */
+
+	/* USER CODE END Check_RTC_BKUP */
+
+	/** Initialize RTC and set the Time and Date
+	 */
+	sTime.Hours = 0;
+	sTime.Minutes = 0;
+	sTime.Seconds = 0;
+
+	if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK) {
+		Error_Handler();
+	}
+	DateToUpdate.WeekDay = RTC_WEEKDAY_WEDNESDAY;
+	DateToUpdate.Month = RTC_MONTH_OCTOBER;
+	DateToUpdate.Date = 14;
+	DateToUpdate.Year = 20;
+
+	if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BIN) != HAL_OK) {
 		Error_Handler();
 	}
 	/* USER CODE BEGIN RTC_Init 2 */
@@ -360,12 +462,23 @@ static void MX_USART1_UART_Init(void) {
  * @retval None
  */
 static void MX_GPIO_Init(void) {
+	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
 
 	/* GPIO Ports Clock Enable */
 	__HAL_RCC_GPIOC_CLK_ENABLE();
 	__HAL_RCC_GPIOD_CLK_ENABLE();
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
+
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+
+	/*Configure GPIO pin : PC13 */
+	GPIO_InitStruct.Pin = GPIO_PIN_13;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
 }
 
