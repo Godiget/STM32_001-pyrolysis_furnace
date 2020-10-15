@@ -2,16 +2,16 @@
 stm32f103 for reading VDO MAP sensor with LCD
 
 Siemens MAP pinout:
-![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/map_vdo.jpg)
+![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/fig/map_vdo.jpg)
 
 Mercedes MAP pinout:
-![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/map_mercedes.jpg)
+![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/fig/map_mercedes.jpg)
 
 f103 pinout:
-![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/stm32f103c8t6_pinout.png)
+![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/fig/stm32f103c8t6_pinout.png)
 
 NTC Термистор:
-![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/ntc_thermistor.png)
+![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/fig/ntc_thermistor.jpg)
 
 - Номинальное напряжение, V 3,4(±0,3)
 - Сопротивление при 15°С, Ом 4033…4838
