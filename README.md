@@ -20,3 +20,6 @@ NTC Термистор:
 - Размер под ключ S19
 - Резьба М12x1.5
 - Масса, кг 0,044
+
+Дроссельная заслонка:
+![](https://github.com/Godiget/STM32_001-f103-MAP-LCD/blob/master/fig/TPS.png)
