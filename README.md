@@ -26,9 +26,9 @@ NTC Термистор:
 
 Пример подключения математических функций для STM32F4 в stm32cubeide
 1) Открываем Project -> Properties -> C++ general -> Paths and Symbols
-2) На вкладке Libraries добавляем название библиотеки libarm_cortexM3l_math.a, без расширения ".a" и убрав буквы "lib": т.е. arm_cortexM4lf_math
+2) На вкладке Libraries добавляем название библиотеки libarm_cortexM3l_math.a, без расширения ".a" и убрав буквы "lib": т.е. arm_cortexM3l_math
 3) На вкладке Library Paths добавляем путь к библиотеке libarm_cortexM3l_math.a
-"C:\Documents and Settings\имя_пользователя\STM32Cube\Repository\STM32Cube_FW_F4_версия\Drivers\CMSIS\Lib\GCC"
-4) На вкладке Symbols добавляем два значения: __FPU_PRESENT (спереди два символа подчеркивания) , ARM_MATH_CM4 (тут в зависимости от серии микроконтроллера)
+"C:\Documents and Settings\имя_пользователя\STM32Cube\Repository\STM32Cube_FW_F3_версия\Drivers\CMSIS\Lib\GCC"
+4) На вкладке Symbols добавляем два значения: __FPU_PRESENT (спереди два символа подчеркивания) , ARM_MATH_CM3 (тут в зависимости от серии микроконтроллера)
 В текущей версии также придётся вручную скопировать в проект файлы arm_math.h, const_structs.h и arm_common_tables.h из
-"C:\Documents and Settings\имя_пользователя\STM32Cube\Repository\STM32Cube_FW_F4_версия\Drivers\CMSIS\DSP\Include".
+"C:\Documents and Settings\имя_пользователя\STM32Cube\Repository\STM32Cube_FW_F3_версия\Drivers\CMSIS\DSP\Include".
