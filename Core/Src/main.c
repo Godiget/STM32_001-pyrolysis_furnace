@@ -50,19 +50,31 @@ CAN_HandleTypeDef hcan;
 
 I2C_HandleTypeDef hi2c1;
 
+UART_HandleTypeDef huart1;
+
 /* USER CODE BEGIN PV */
 
+// OLED variables
 uint16_t counter, Xpos, Ypos;
 
 volatile uint8_t flagADC = 0;
 volatile uint16_t adc[10] = { 0, }; // у нас два канала поэтому массив из двух элементов
 
+// Throttle position variables
 uint8_t Tsp1 = 0;
 uint8_t Tsp2 = 0;
 
 uint16_t TP1 = 0;
 uint16_t TP2 = 0;
 
+uint16_t PID1_PARAM_KP, PID1_PARAM_KI, PID1_PARAM_KD;
+uint8_t flagSendPID1Param = 0;
+
+// Temperature variables
+uint16_t ntcTemp[4] = { 0, };
+uint16_t tcTemp = 0;
+
+// Keypad variables
 uint8_t flag_xpos_press = 1;
 uint8_t flag_xpos_wait = 1;
 uint32_t time_xpos_press = 0;
@@ -71,9 +83,16 @@ uint8_t flag_ypos_press = 1;
 uint8_t flag_ypos_wait = 1;
 uint32_t time_ypos_press = 0;
 
+// UART variables
+char trans_uart[64] = { 0, };
+uint8_t buff[8] = { 0, }; // буффер на прием
+
+uint16_t time = 0;
+//uint16_t spTP1 = 0; // уже есть Tsp1 и Tsp2
+//uint16_t spTP2 = 0;
+
 // CAN private variables
 char trans_str[128] = { 0, };
-
 CAN_TxHeaderTypeDef TxHeader;
 CAN_RxHeaderTypeDef RxHeader;
 uint8_t TxData[8] = { 0, };
@@ -88,12 +107,81 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_CAN_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart == &huart1) {
+
+		// debug
+//		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+//		snprintf(trans_str, 63, "%02d,%02d", buff[0], buff[1]);
+//		HAL_UART_Transmit(&huart1, (uint8_t*) trans_str, strlen(trans_str),
+//				1000);
+//		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+		// debug
+
+		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+
+		if (buff[0] == 0) {	// запрос данных от компа
+			time++;
+			if (time > 255)
+				time = 0;
+			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+			snprintf(trans_uart, 63,
+					"%01d,%03d,%03d,%03d,%03d,%03d,%03d,%03d,%03d,%03d\r\n", 0,
+					TP1, TP2, Tsp1, Tsp2, ntcTemp[0], ntcTemp[1], ntcTemp[2],
+					ntcTemp[3], tcTemp);
+			HAL_UART_Transmit(&huart1, (uint8_t*) trans_uart,
+					strlen(trans_uart), 1000);
+			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+		} else if (buff[0] == 3) {// получаем значение положения заслонок от компа
+//
+//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+//			snprintf(trans_str, 63, "%02d,%02d,%02d\r\n", buff[0], buff[2], buff[4]);
+//			HAL_UART_Transmit(&huart1, (uint8_t*) trans_str, strlen(trans_str),
+//					1000);
+//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+
+			Tsp1 = buff[2];
+			Tsp2 = buff[4];
+
+			if (Tsp1 < 0)		// проверка 0..100
+				Tsp1 = 0;
+			if (Tsp1 > 100)
+				Tsp1 = 100;
+			if (Tsp2 < 0)
+				Tsp2 = 0;
+			if (Tsp2 > 100)
+				Tsp2 = 100;
+
+		} else if (buff[0] == 4) {		// получаем коэффициенты PID1 с компа
+
+			PID1_PARAM_KP = buff[2];
+			PID1_PARAM_KI = buff[4];
+			PID1_PARAM_KD = buff[6];
+
+			// debug
+			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+			snprintf(trans_str, 63, "%02d,%02d,%02d,%02d\r\n", buff[0], buff[2],
+					buff[4], buff[6]);
+			HAL_UART_Transmit(&huart1, (uint8_t*) trans_str, strlen(trans_str),
+					1000);
+			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+			// debug
+
+			flagSendPID1Param = 1;
+		}
+
+		HAL_UART_Receive_IT(&huart1, (uint8_t*) buff, 8);
+
+	}
+}
+
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
 	if (hadc->Instance == ADC1) {
 		flagADC = 1;
@@ -105,11 +193,20 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
 		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
 
-		if (RxHeader.StdId == 0x0200) {
+		if (RxHeader.StdId == 0x0100) {
 			TP1 = (RxData[1] << 8) | RxData[0];
 			TP2 = (RxData[3] << 8) | RxData[2];
+
+		} else if (RxHeader.StdId == 0x0120) {
+			ntcTemp[0] = RxData[0];
+			ntcTemp[1] = RxData[2];
+			ntcTemp[2] = RxData[4];
+			ntcTemp[3] = RxData[6];
+
+			tcTemp = (RxData[9] << 8) | RxData[8];
+
 		} else if (RxHeader.StdId == 0x0126) {
-//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
+			//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
 		}
 	}
 }
@@ -156,6 +253,7 @@ int main(void) {
 	MX_ADC1_Init();
 	MX_CAN_Init();
 	MX_I2C1_Init();
+	MX_USART1_UART_Init();
 	/* USER CODE BEGIN 2 */
 	HAL_Delay(50);
 	HAL_ADCEx_Calibration_Start(&hadc1);
@@ -187,6 +285,8 @@ int main(void) {
 					| CAN_IT_LAST_ERROR_CODE);
 
 	int i;
+
+	HAL_UART_Receive_IT(&huart1, (uint8_t*) buff, 8);
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -318,26 +418,37 @@ int main(void) {
 		ssd1306_WriteString(trans_str, Font_11x18, White);
 		ssd1306_UpdateScreen();
 
-		TxHeader.StdId = 0x0100;
+		// собираем пакет для отправки на заслонки
+		if (flagSendPID1Param == 1) {
+			TxHeader.StdId = 0x0111;
+			TxData[0] = PID1_PARAM_KP;
+			TxData[1] = PID1_PARAM_KI;
+			TxData[2] = PID1_PARAM_KD;
+			flagSendPID1Param = 0;
 
-		TxData[0] = Tsp1;
-		TxData[1] = Tsp2;
+		} else {
+			TxHeader.StdId = 0x0099;
+			TxData[0] = Tsp1;
+			TxData[1] = Tsp2;
+		}
+
 		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
-//		while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0)
-//			;
+		while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0)
+			// здесь висим если CAN ложиться
+			;
+
+		if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox)
+				!= HAL_OK) {
+			ssd1306_SetCursor(0, 36);
+			ssd1306_WriteString("CAN ERROR", Font_6x8, White);
+			ssd1306_UpdateScreen();
+		}
+
+//		while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0);
 //
-//		if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox)
-//				!= HAL_OK) {
-//			ssd1306_SetCursor(0, 36);
-//					ssd1306_WriteString("CAN ERROR", Font_6x8, White);
-//					ssd1306_UpdateScreen();
+//		if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
+//			HAL_UART_Transmit(&huart1, (uint8_t*) "ER SEND\n", 8, 100);
 //		}
-
-		//while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0);
-
-		//if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
-		//	HAL_UART_Transmit(&huart1, (uint8_t*) "ER SEND\n", 8, 100);
-		//}
 
 		//HAL_Delay(500);
 
@@ -519,6 +630,37 @@ static void MX_I2C1_Init(void) {
 }
 
 /**
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART1_UART_Init(void) {
+
+	/* USER CODE BEGIN USART1_Init 0 */
+
+	/* USER CODE END USART1_Init 0 */
+
+	/* USER CODE BEGIN USART1_Init 1 */
+
+	/* USER CODE END USART1_Init 1 */
+	huart1.Instance = USART1;
+	huart1.Init.BaudRate = 115200;
+	huart1.Init.WordLength = UART_WORDLENGTH_8B;
+	huart1.Init.StopBits = UART_STOPBITS_1;
+	huart1.Init.Parity = UART_PARITY_NONE;
+	huart1.Init.Mode = UART_MODE_TX_RX;
+	huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+	if (HAL_UART_Init(&huart1) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN USART1_Init 2 */
+
+	/* USER CODE END USART1_Init 2 */
+
+}
+
+/**
  * Enable DMA controller clock
  */
 static void MX_DMA_Init(void) {
@@ -542,12 +684,23 @@ static void MX_GPIO_Init(void) {
 	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
 
 	/* GPIO Ports Clock Enable */
+	__HAL_RCC_GPIOC_CLK_ENABLE();
 	__HAL_RCC_GPIOD_CLK_ENABLE();
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
 	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_RESET);
+
+	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
+
+	/*Configure GPIO pin : PC15 */
+	GPIO_InitStruct.Pin = GPIO_PIN_15;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
 	/*Configure GPIO pin : PB2 */
 	GPIO_InitStruct.Pin = GPIO_PIN_2;
@@ -556,23 +709,14 @@ static void MX_GPIO_Init(void) {
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-	/*Configure GPIO pins : PB3 PB4 PB6 */
-	GPIO_InitStruct.Pin = GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_6;
+	/*Configure GPIO pins : PB3 PB4 */
+	GPIO_InitStruct.Pin = GPIO_PIN_3 | GPIO_PIN_4;
 	GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
 	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : PB7 */
-	GPIO_InitStruct.Pin = GPIO_PIN_7;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
 	/*Configure peripheral I/O remapping */
 	__HAL_AFIO_REMAP_SPI1_ENABLE();
-
-	/*Configure peripheral I/O remapping */
-	__HAL_AFIO_REMAP_USART1_ENABLE();
 
 }
 
