@@ -25,6 +25,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "ssd1306.h"
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,8 +62,8 @@ volatile uint8_t flagADC = 0;
 volatile uint16_t adc[10] = { 0, }; // у нас два канала поэтому массив из двух элементов
 
 // Throttle position variables
-uint8_t Tsp1 = 0;
-uint8_t Tsp2 = 0;
+uint16_t Tsp1 = 0;
+uint16_t Tsp2 = 0;
 
 uint16_t TP1 = 0;
 uint16_t TP2 = 0;
@@ -88,6 +89,7 @@ char trans_uart[64] = { 0, };
 uint8_t buff[8] = { 0, }; // буффер на прием
 
 uint16_t time = 0;
+bool flagSendUART = false;
 //uint16_t spTP1 = 0; // уже есть Tsp1 и Tsp2
 //uint16_t spTP2 = 0;
 
@@ -98,6 +100,8 @@ CAN_RxHeaderTypeDef RxHeader;
 uint8_t TxData[8] = { 0, };
 uint8_t RxData[8] = { 0, };
 uint32_t TxMailbox = 0;
+bool flagErrorCAN = false;
+uint32_t er = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -109,7 +113,7 @@ static void MX_CAN_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Buttons_Check(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -125,59 +129,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 //		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
 		// debug
 
-		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-
-		if (buff[0] == 0) {	// запрос данных от компа
-			time++;
-			if (time > 255)
-				time = 0;
-			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
-			snprintf(trans_uart, 63,
-					"%01d,%03d,%03d,%03d,%03d,%03d,%03d,%03d,%03d,%03d\r\n", 0,
-					TP1, TP2, Tsp1, Tsp2, ntcTemp[0], ntcTemp[1], ntcTemp[2],
-					ntcTemp[3], tcTemp);
-			HAL_UART_Transmit(&huart1, (uint8_t*) trans_uart,
-					strlen(trans_uart), 1000);
-			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
-		} else if (buff[0] == 3) {// получаем значение положения заслонок от компа
-//
-//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
-//			snprintf(trans_str, 63, "%02d,%02d,%02d\r\n", buff[0], buff[2], buff[4]);
-//			HAL_UART_Transmit(&huart1, (uint8_t*) trans_str, strlen(trans_str),
-//					1000);
-//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
-
-			Tsp1 = buff[2];
-			Tsp2 = buff[4];
-
-			if (Tsp1 < 0)		// проверка 0..100
-				Tsp1 = 0;
-			if (Tsp1 > 100)
-				Tsp1 = 100;
-			if (Tsp2 < 0)
-				Tsp2 = 0;
-			if (Tsp2 > 100)
-				Tsp2 = 100;
-
-		} else if (buff[0] == 4) {		// получаем коэффициенты PID1 с компа
-
-			PID1_PARAM_KP = buff[2];
-			PID1_PARAM_KI = buff[4];
-			PID1_PARAM_KD = buff[6];
-
-			// debug
-			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
-			snprintf(trans_str, 63, "%02d,%02d,%02d,%02d\r\n", buff[0], buff[2],
-					buff[4], buff[6]);
-			HAL_UART_Transmit(&huart1, (uint8_t*) trans_str, strlen(trans_str),
-					1000);
-			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
-			// debug
-
-			flagSendPID1Param = 1;
-		}
-
-		HAL_UART_Receive_IT(&huart1, (uint8_t*) buff, 8);
+		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
+		flagSendUART = true;
 
 	}
 }
@@ -191,7 +144,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
-		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
+//		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
 
 		if (RxHeader.StdId == 0x0100) {
 			TP1 = (RxData[1] << 8) | RxData[0];
@@ -199,11 +152,22 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 
 		} else if (RxHeader.StdId == 0x0120) {
 			ntcTemp[0] = RxData[0];
-			ntcTemp[1] = RxData[2];
-			ntcTemp[2] = RxData[4];
-			ntcTemp[3] = RxData[6];
+			ntcTemp[1] = RxData[1];
+			ntcTemp[2] = RxData[2];
+			ntcTemp[3] = RxData[3];
 
-			tcTemp = (RxData[9] << 8) | RxData[8];
+			tcTemp = (RxData[5] << 8) | RxData[4];
+//			tcTemp = RxData[4];
+
+//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+//			//TP1 = 100;
+//			snprintf(trans_uart, 63,
+//					"%01d,%c,%c,%03d,%03d,%03d,%03d,%03d,%03d,%03d\r\n", 1, (char) (TP1+1),
+//					(char) (TP2+1), Tsp1, Tsp2, ntcTemp[0], ntcTemp[1], ntcTemp[2],
+//					ntcTemp[3], tcTemp);
+//			HAL_UART_Transmit(&huart1, (uint8_t*) trans_uart,
+//					strlen(trans_uart), 1000);
+//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
 
 		} else if (RxHeader.StdId == 0x0126) {
 			//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
@@ -212,12 +176,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 }
 
 void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan) {
-	uint32_t er = HAL_CAN_GetError(hcan);
-	sprintf(trans_str, "ER CAN %lu %08lX", er, er);
-
-	ssd1306_SetCursor(0, 54);
-	ssd1306_WriteString(trans_str, Font_6x8, White);
-	ssd1306_UpdateScreen();
+	er = HAL_CAN_GetError(hcan);
+	flagErrorCAN = true;
 
 }
 /* USER CODE END 0 */
@@ -273,6 +233,8 @@ int main(void) {
 	ssd1306_SetCursor(0, 18);
 	sprintf(trans_str, "%03d%%   %03d%%", Tsp1, Tsp2);
 	ssd1306_WriteString(trans_str, Font_11x18, White);
+
+
 	ssd1306_UpdateScreen();
 
 	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
@@ -284,9 +246,8 @@ int main(void) {
 			CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_ERROR | CAN_IT_BUSOFF
 					| CAN_IT_LAST_ERROR_CODE);
 
-	int i;
-
 	HAL_UART_Receive_IT(&huart1, (uint8_t*) buff, 8);
+
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -295,118 +256,7 @@ int main(void) {
 
 		//TxHeader.StdId = 0x0378;
 		//TxData[0] = 90;
-
-		if (flagADC) {
-			Xpos = 0;
-			Ypos = 0;
-			for (i = 0; i < 10; i = i + 2) {
-				Xpos = Xpos + adc[i];
-				Ypos = Ypos + adc[i + 1];
-			}
-			Xpos /= 50;
-			Ypos /= 50;
-			//HAL_Delay(500);
-
-			flagADC = 0;
-		}
-
-		if ((Xpos < 150 || Xpos > 250) && flag_xpos_press) {
-			flag_xpos_press = 0;
-			flag_xpos_wait = 0;
-			time_xpos_press = HAL_GetTick();
-		}
-
-		if (!flag_xpos_wait && (HAL_GetTick() - time_xpos_press) > 50) {
-			if (Xpos < 10) {
-				// действие на нажатие
-				if (Tsp1 > 5)
-					Tsp1 -= 5;
-				else
-					Tsp1 = 0;
-				flag_xpos_wait = 1;
-			} else if (Xpos < 150 && Xpos > 10) {
-				// действие на нажатие
-				if (Tsp1 > 1)
-					Tsp1 -= 1;
-				else
-					Tsp1 = 0;
-				flag_xpos_wait = 1;
-			} else if (Xpos > 390) {
-				// действие на нажатие
-				if (Tsp1 < 95)
-					Tsp1 += 5;
-				else
-					Tsp1 = 100;
-				flag_xpos_wait = 1;
-			} else if (Xpos > 250) {
-				// действие на нажатие
-				if (Tsp1 < 99)
-					Tsp1 += 1;
-				else
-					Tsp1 = 100;
-				flag_xpos_wait = 1;
-			} else {
-				flag_xpos_wait = 1;
-				flag_xpos_press = 1;
-			}
-		}
-		if ((Xpos < 50 || Xpos > 350) && !flag_xpos_press
-				&& (HAL_GetTick() - time_xpos_press) > 100)
-			flag_xpos_press = 1;
-		if ((Xpos < 100 || Xpos > 300) && !flag_xpos_press
-				&& (HAL_GetTick() - time_xpos_press) > 250)
-			flag_xpos_press = 1;
-		if (!flag_xpos_press && (HAL_GetTick() - time_xpos_press) > 500)
-			flag_xpos_press = 1;
-
-		if ((Ypos < 150 || Ypos > 250) && flag_ypos_press) {
-			flag_ypos_press = 0;
-			flag_ypos_wait = 0;
-			time_ypos_press = HAL_GetTick();
-		}
-
-		if (!flag_ypos_wait && (HAL_GetTick() - time_ypos_press) > 50) {
-			if (Ypos <= 3) {
-				// действие на нажатие
-				if (Tsp2 > 5)
-					Tsp2 -= 5;
-				else
-					Tsp2 = 0;
-				flag_ypos_wait = 1;
-			} else if (Ypos < 150 && Ypos > 3) {
-				// действие на нажатие
-				if (Tsp2 > 1)
-					Tsp2 -= 1;
-				else
-					Tsp2 = 0;
-				flag_ypos_wait = 1;
-			} else if (Ypos > 405) {
-				// действие на нажатие
-				if (Tsp2 < 95)
-					Tsp2 += 5;
-				else
-					Tsp2 = 100;
-				flag_ypos_wait = 1;
-			} else if (Ypos > 250) {
-				// действие на нажатие
-				if (Tsp2 < 99)
-					Tsp2 += 1;
-				else
-					Tsp2 = 100;
-				flag_ypos_wait = 1;
-			} else {
-				flag_ypos_wait = 1;
-				flag_ypos_press = 1;
-			}
-		}
-		if ((Ypos < 50 || Ypos > 350) && !flag_ypos_press
-				&& (HAL_GetTick() - time_ypos_press) > 100)
-			flag_ypos_press = 1;
-		if ((Ypos < 100 || Ypos > 300) && !flag_ypos_press
-				&& (HAL_GetTick() - time_ypos_press) > 250)
-			flag_ypos_press = 1;
-		if (!flag_ypos_press && (HAL_GetTick() - time_ypos_press) > 500)
-			flag_ypos_press = 1;
+		Buttons_Check();
 
 		ssd1306_SetCursor(0, 18);
 		sprintf(trans_str, "%03d%%   %03d%%", Tsp1, Tsp2);
@@ -416,6 +266,14 @@ int main(void) {
 
 		sprintf(trans_str, "%04d   %04d", TP1, TP2);
 		ssd1306_WriteString(trans_str, Font_11x18, White);
+
+		if (flagErrorCAN) {
+			sprintf(trans_str, "ERCAN %lu %08lX", er, er);
+			ssd1306_SetCursor(0, 54);
+			ssd1306_WriteString(trans_str, Font_6x8, White);
+			flagErrorCAN = false;
+		}
+
 		ssd1306_UpdateScreen();
 
 		// собираем пакет для отправки на заслонки
@@ -432,15 +290,87 @@ int main(void) {
 			TxData[1] = Tsp2;
 		}
 
-		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_2);
-		while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0)
-			// здесь висим если CAN ложиться
-			;
+		if (flagSendUART) {
 
-		if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox)
+			ssd1306_SetCursor(44, 0);
+			sprintf(trans_str, "%03d", time);							// debug
+			ssd1306_WriteString(trans_str, Font_11x18, White);
+
+			if (buff[0] == 0) {	// запрос данных от компа
+
+				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+				if (time >= 1) {
+					snprintf(trans_uart, 63,
+							"%01d,%03d,%03d,%03d,%03d,%03d,%03d\r\n", 0, TP1,
+							TP2, Tsp1, Tsp2, ntcTemp[0], ntcTemp[1]);
+					HAL_UART_Transmit(&huart1, (uint8_t*) trans_uart,
+							strlen(trans_uart), 1000);
+					time = 0;
+				} else {
+					time++;
+					snprintf(trans_uart, 63, "%01d,%03d,%03d,%03d\r\n", 1,
+							ntcTemp[2], ntcTemp[3], tcTemp);
+					HAL_UART_Transmit(&huart1, (uint8_t*) trans_uart,
+							strlen(trans_uart), 1000);
+				}
+				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+			} else if (buff[0] == 3) {// получаем значение положения заслонок от компа
+				//
+				//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+				//			snprintf(trans_str, 63, "%02d,%02d,%02d\r\n", buff[0], buff[2], buff[4]);
+				//			HAL_UART_Transmit(&huart1, (uint8_t*) trans_str, strlen(trans_str),
+				//					1000);
+				//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+
+				Tsp1 = buff[2];
+				Tsp2 = buff[4];
+
+				if (Tsp1 < 0)		// проверка 0..100
+					Tsp1 = 0;
+				if (Tsp1 > 100)
+					Tsp1 = 100;
+				if (Tsp2 < 0)
+					Tsp2 = 0;
+				if (Tsp2 > 100)
+					Tsp2 = 100;
+
+			} else if (buff[0] == 4) {	// получаем коэффициенты PID1 с компа
+
+				PID1_PARAM_KP = buff[2];
+				PID1_PARAM_KI = buff[4];
+				PID1_PARAM_KD = buff[6];
+
+				// debug
+//				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+//				snprintf(trans_str, 63, "%02d,%02d,%02d,%02d\r\n", buff[0],
+//						buff[2], buff[4], buff[6]);
+//				HAL_UART_Transmit(&huart1, (uint8_t*) trans_str,
+//						strlen(trans_str), 1000);
+//				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+				// debug
+
+				flagSendPID1Param = 1;
+			}
+
+			HAL_UART_Receive_IT(&huart1, (uint8_t*) buff, 8);
+			flagSendUART = false;
+
+		}
+
+//		while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0) {
+//			// здесь висим если CAN ложиться
+//			//i++;
+//			//if (i > 0xfffe)
+//				//return 1;
+//		}
+		if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0) {
+			ssd1306_SetCursor(0, 54);
+			ssd1306_WriteString("CAN BUSY   ", Font_6x8, White);
+			ssd1306_UpdateScreen();
+		} else if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox)
 				!= HAL_OK) {
-			ssd1306_SetCursor(0, 36);
-			ssd1306_WriteString("CAN ERROR", Font_6x8, White);
+			ssd1306_SetCursor(0, 54);
+			ssd1306_WriteString("CAN ERROR  ", Font_6x8, White);
 			ssd1306_UpdateScreen();
 		}
 
@@ -450,7 +380,7 @@ int main(void) {
 //			HAL_UART_Transmit(&huart1, (uint8_t*) "ER SEND\n", 8, 100);
 //		}
 
-		//HAL_Delay(500);
+		//HAL_Delay(5);
 
 		/* USER CODE END WHILE */
 
@@ -721,7 +651,121 @@ static void MX_GPIO_Init(void) {
 }
 
 /* USER CODE BEGIN 4 */
+void Buttons_Check(void) {
+	int i;
 
+	if (flagADC) {
+		Xpos = 0;
+		Ypos = 0;
+		for (i = 0; i < 10; i = i + 2) {
+			Xpos = Xpos + adc[i];
+			Ypos = Ypos + adc[i + 1];
+		}
+		Xpos /= 50;
+		Ypos /= 50;
+		//HAL_Delay(500);
+
+		flagADC = 0;
+	}
+
+	if ((Xpos < 150 || Xpos > 250) && flag_xpos_press) {
+		flag_xpos_press = 0;
+		flag_xpos_wait = 0;
+		time_xpos_press = HAL_GetTick();
+	}
+
+	if (!flag_xpos_wait && (HAL_GetTick() - time_xpos_press) > 50) {
+		if (Xpos < 10) {
+			// действие на нажатие
+			if (Tsp1 > 5)
+				Tsp1 -= 5;
+			else
+				Tsp1 = 0;
+			flag_xpos_wait = 1;
+		} else if (Xpos < 150 && Xpos > 10) {
+			// действие на нажатие
+			if (Tsp1 > 1)
+				Tsp1 -= 1;
+			else
+				Tsp1 = 0;
+			flag_xpos_wait = 1;
+		} else if (Xpos > 390) {
+			// действие на нажатие
+			if (Tsp1 < 95)
+				Tsp1 += 5;
+			else
+				Tsp1 = 100;
+			flag_xpos_wait = 1;
+		} else if (Xpos > 250) {
+			// действие на нажатие
+			if (Tsp1 < 99)
+				Tsp1 += 1;
+			else
+				Tsp1 = 100;
+			flag_xpos_wait = 1;
+		} else {
+			flag_xpos_wait = 1;
+			flag_xpos_press = 1;
+		}
+	}
+	if ((Xpos < 50 || Xpos > 350) && !flag_xpos_press
+			&& (HAL_GetTick() - time_xpos_press) > 100)
+		flag_xpos_press = 1;
+	if ((Xpos < 100 || Xpos > 300) && !flag_xpos_press
+			&& (HAL_GetTick() - time_xpos_press) > 250)
+		flag_xpos_press = 1;
+	if (!flag_xpos_press && (HAL_GetTick() - time_xpos_press) > 500)
+		flag_xpos_press = 1;
+
+	if ((Ypos < 150 || Ypos > 250) && flag_ypos_press) {
+		flag_ypos_press = 0;
+		flag_ypos_wait = 0;
+		time_ypos_press = HAL_GetTick();
+	}
+
+	if (!flag_ypos_wait && (HAL_GetTick() - time_ypos_press) > 50) {
+		if (Ypos <= 3) {
+			// действие на нажатие
+			if (Tsp2 > 5)
+				Tsp2 -= 5;
+			else
+				Tsp2 = 0;
+			flag_ypos_wait = 1;
+		} else if (Ypos < 150 && Ypos > 3) {
+			// действие на нажатие
+			if (Tsp2 > 1)
+				Tsp2 -= 1;
+			else
+				Tsp2 = 0;
+			flag_ypos_wait = 1;
+		} else if (Ypos > 405) {
+			// действие на нажатие
+			if (Tsp2 < 95)
+				Tsp2 += 5;
+			else
+				Tsp2 = 100;
+			flag_ypos_wait = 1;
+		} else if (Ypos > 250) {
+			// действие на нажатие
+			if (Tsp2 < 99)
+				Tsp2 += 1;
+			else
+				Tsp2 = 100;
+			flag_ypos_wait = 1;
+		} else {
+			flag_ypos_wait = 1;
+			flag_ypos_press = 1;
+		}
+	}
+	if ((Ypos < 50 || Ypos > 350) && !flag_ypos_press
+			&& (HAL_GetTick() - time_ypos_press) > 100)
+		flag_ypos_press = 1;
+	if ((Ypos < 100 || Ypos > 300) && !flag_ypos_press
+			&& (HAL_GetTick() - time_ypos_press) > 250)
+		flag_ypos_press = 1;
+	if (!flag_ypos_press && (HAL_GetTick() - time_ypos_press) > 500)
+		flag_ypos_press = 1;
+}
 /* USER CODE END 4 */
 
 /**
